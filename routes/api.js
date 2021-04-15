@@ -1,138 +1,110 @@
 'use strict';
+require('dotenv').config();
 const ObjectId = require('mongodb').ObjectId;
-const myDB = require('../connection.js');
+const mongoose = require('mongoose');
 
 module.exports = function (app) {
+  mongoose.connect(process.env.DB, { useNewUrlParser: true, useUnifiedTopology: true });
+  
+  const ISSUES_SCHEMA = new mongoose.Schema({
+    issue_title: {type: String, default: ''},
+    issue_text: {type: String, default: ''},
+    created_by: {type: String, default: ''},
+    assigned_to: {type: String, default: ''},
+    status_text: {type: String, default: ''},
+    open: {type: Boolean, default: true},
+    created_on: {type: Date, default: Date.now},
+    updated_on: {type: Date, default: Date.now}
+  });
+
+  function model(project) {
+    return mongoose.model(project, ISSUES_SCHEMA);
+  }
 
   app.route('/api/issues/:project')
-  /* You can send a GET request to /api/issues/{projectname} and filter the request by also passing along any field and value as a URL query (ie. /api/issues/{project}?open=false). You can pass one or more field/value pairs at once. */
     .get(function (req, res){
-      myDB(async client => {
-        const myDataBase = await client.db('issues').collection(req.params.project);
+      const DATA_MODEL = model(req.params.project);
 
-        myDataBase.find().toArray()
-          .then(issues => {
-            console.log(req.query);
-            const keys = Object.keys(req.query);
-            if(keys.length === 0) {
-              // console.log(issues);
-              res.json(issues);
-            }
-            else {
-              for(let key of keys){
-                if(key == 'created_on' || key == 'updated_on') req.query[key] = new Date(req.query[key]);
-                if(key == 'open') req.query[key] = req.query[key] == 'true' ? true : false;
-              }
-              // console.log( issues.filter(issue => keys.every(key => issue[key] == req.query[key])) );
-              res.json( issues.filter(issue => keys.every(key => issue[key] == req.query[key])) );
-            }
-          });
+      DATA_MODEL.find(req.query, (err, data) => {
+        if(err) return console.log(err);
+        res.json(data);
       });
     })
     // post new
     .post(function (req, res){
-      myDB(async client => {
-        const myDataBase = await client.db('issues').collection(req.params.project);
+      const { issue_title, issue_text, created_by } = req.body;
 
-        const {
-          issue_title,
-          issue_text,
-          created_by,
-          assigned_to = '',
-          status_text = '',
-          open = true,
-          created_on = new Date(),
-          updated_on = new Date() } = req.body;
-
-        if(!issue_title || !issue_text || !created_by) res.json({ error: 'required field(s) missing' });
-        else{
-          myDataBase.insertOne({ issue_title, issue_text, created_by, assigned_to, status_text, open, created_on, updated_on }, (err, doc) => {
-            if(err) console.log(err);
-            else {
-              // console.log(doc.ops[0]);
-              res.json(doc.ops[0]);
-            }
-          });
-        }
-        
-      });
+      if(!issue_title || !issue_text || !created_by){
+        console.log({ error: 'required field(s) missing' });
+        res.json({ error: 'required field(s) missing' });
+      }
+      else{
+        const DATA_MODEL = model(req.params.project);
+        const form = new DATA_MODEL(req.body);
+        form.save((err, data) => {
+          if(err) return console.log(err);
+          res.json(data);
+        });
+      }
     })
     // edits already posted
-    /* When the PUT request sent to /api/issues/{projectname} does not include update fields, the return value is { error: 'no update field(s) sent', '_id': _id }. On any other error, the return value is { error: 'could not update', '_id': _id }. */
     .put(function (req, res){
-      // console.log(req.body);
-      myDB(async client => {
-        if(!req.body._id) {
-          // console.log({ error: 'missing _id' });
-          res.json({ error: 'missing _id' });
-          return;
+      if(!req.body._id) {
+        console.log({ error: 'missing _id' });
+        return res.json({ error: 'missing _id' });
+      }
+
+      const emptyFields = Object.entries(req.body).every(([key, val]) => {
+        if(key === '_id') return true
+        return val === '';
+      });
+
+      if(emptyFields) {
+        console.log({ error: 'no update field(s) sent', '_id': req.body._id });
+        return res.json({ error: 'no update field(s) sent', '_id': req.body._id });
+      }
+
+      const DATA_MODEL = model(req.params.project);
+
+      DATA_MODEL.findById(req.body._id, (err, data) => {
+        if(err) return console.log(err);
+        if(data === null) {
+          console.log({ error: 'could not update', '_id': req.body._id });
+          return res.json({ error: 'could not update', '_id': req.body._id });
         }
+        
+        data.issue_title = req.body.issue_title || '';
+        data.issue_text = req.body.issue_text || '';
+        data.created_by = req.body.created_by || '';
+        data.assigned_to = req.body.assigned_to || '';
+        data.status_text = req.body.status_text || '';
+        data.open = req.body.open === 'false' ? false : true;
+        data.updated_on = Date.now();
 
-        const myDataBase = await client.db('issues').collection(req.params.project);
-        myDataBase.findOne({ _id: new ObjectId(req.body._id) }, (err, issue) => {
-          if(issue){
-            const cloneBody = Object.assign({}, req.body);
-            delete cloneBody._id;
-
-            // console.log('this is clone');
-            // console.log(cloneBody);
-            if(Object.values(cloneBody).every(value => value === '')) {
-              // console.log({ error: 'no update field(s) sent', '_id': req.body._id });
-              res.json({ error: 'no update field(s) sent', '_id': req.body._id });
-              return;
-            }
-
-            for(let [key,val] of Object.entries(req.body)){
-              req.body[key] = val === '' ? undefined : val;
-            }
-            
-            const {
-              issue_title = issue.issue_title,
-              issue_text = issue.issue_text,
-              created_by = issue.created_by,
-              assigned_to = issue.assigned_to,
-              status_text = issue.status_text } = req.body;
-            const updated_on = new Date();
-
-            let open = true;
-            if(req.body.open === 'false') open = false;
-
-            // console.log({
-            //   issue_title, issue_text, created_by, assigned_to, status_text, open, updated_on
-            // });
-
-            myDataBase.updateOne(issue, { $set: {issue_title, issue_text, created_by, assigned_to, status_text, open, updated_on} });
-
-            // console.log({"result":"successfully updated","_id":req.body._id});
-            res.json({"result":"successfully updated","_id":req.body._id});
-          }
-          else {
-            // console.log({ error: 'could not update', '_id': req.body._id });
-            res.json({ error: 'could not update', '_id': req.body._id });
-          }
+        data.save((err, form) => {
+          if(err) return console.log(err);
+          console.log({"result":"successfully updated","_id":req.body._id});
+          return res.json({"result":"successfully updated","_id":req.body._id});
         });
       });
     })
     // delete posted
     .delete(function (req, res){
-      myDB(async client => {
-        if(!req.body._id) {
-          // console.log({ error: 'missing _id' });
-          res.json({ error: 'missing _id' });
-          return;
+      if(!req.body._id) {
+        console.log({ error: 'missing _id' });
+        return res.json({ error: 'missing _id' });
+      }
+      const DATA_MODEL = model(req.params.project);
+
+      DATA_MODEL.findByIdAndDelete(req.body._id, (err, data) => {
+        if(err) return console.log(err);
+        if(data === null) {
+          console.log({ error: 'could not delete', '_id': req.body._id });
+          return res.json({ error: 'could not delete', '_id': req.body._id });
         }
-        const myDataBase = await client.db('issues').collection(req.params.project);
-        myDataBase.deleteOne({ _id: new ObjectId(req.body._id) }, (err, doc) => {
-          if(err) console.log(err);
-          else if(doc.deletedCount !== 1){
-            // console.log({ error: 'could not delete', '_id': req.body._id });
-            res.json({ error: 'could not delete', '_id': req.body._id });
-          }
-          else {
-            // console.log({"result":"successfully deleted","_id":req.body._id});
-            res.json({"result":"successfully deleted","_id":req.body._id});
-          }
-        });
+
+        console.log({"result":"successfully deleted","_id":req.body._id});
+        return res.json({"result":"successfully deleted","_id":req.body._id});
       });
     });
     
